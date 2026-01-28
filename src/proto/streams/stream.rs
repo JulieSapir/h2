@@ -3,7 +3,7 @@ use crate::Reason;
 use super::*;
 
 use std::fmt;
-use std::task::{Context, Waker};
+use std::task::{ Context, Waker };
 use std::time::Instant;
 
 /// Tracks Stream related state
@@ -114,6 +114,8 @@ pub(super) struct Stream {
 
     /// Validate content-length headers
     pub content_length: ContentLength,
+
+    pub pretend_dead: bool,
 }
 
 /// State related to validating a stream's content-length
@@ -143,20 +145,25 @@ pub(super) struct NextOpen;
 pub(super) struct NextResetExpire;
 
 impl Stream {
+    /// Safely mark the stream as dead and clear all protocol-related state.
+    ///
+    /// This is a "pretend dead" operation:
+    /// - The stream is removed from protocol handling.
+    /// - All tasks are woken up.
+    /// - Buffers and queues are cleared.
+    /// - Flow control is reset.
+    /// - Memory is not freed until Rust drops all references.
+
     pub fn new(id: StreamId, init_send_window: WindowSize, init_recv_window: WindowSize) -> Stream {
         let mut send_flow = FlowControl::new();
         let mut recv_flow = FlowControl::new();
 
-        recv_flow
-            .inc_window(init_recv_window)
-            .expect("invalid initial receive window");
+        recv_flow.inc_window(init_recv_window).expect("invalid initial receive window");
         // TODO: proper error handling?
         let _res = recv_flow.assign_capacity(init_recv_window);
         debug_assert!(_res.is_ok());
 
-        send_flow
-            .inc_window(init_send_window)
-            .expect("invalid initial send window size");
+        send_flow.inc_window(init_send_window).expect("invalid initial send window size");
 
         Stream {
             id,
@@ -194,6 +201,7 @@ impl Stream {
             push_task: None,
             pending_push_promises: store::Queue::new(),
             content_length: ContentLength::Omitted,
+            pretend_dead: false,
         }
     }
 
@@ -257,9 +265,12 @@ impl Stream {
             // There are no more outstanding references to the stream
             self.ref_count == 0 &&
             // The stream is not in any queue
-            !self.is_pending_send && !self.is_pending_send_capacity &&
-            !self.is_pending_accept && !self.is_pending_window_update &&
-            !self.is_pending_open && self.reset_at.is_none()
+            !self.is_pending_send &&
+            !self.is_pending_send_capacity &&
+            !self.is_pending_accept &&
+            !self.is_pending_window_update &&
+            !self.is_pending_open &&
+            self.reset_at.is_none()
     }
 
     /// Returns true when the consumer of the stream has dropped all handles
@@ -292,7 +303,7 @@ impl Stream {
             self.buffered_send_data,
             self.id,
             max_buffer_size,
-            prev_capacity,
+            prev_capacity
         );
 
         if prev_capacity < self.capacity(max_buffer_size) {
@@ -308,7 +319,7 @@ impl Stream {
         debug_assert!(_res.is_ok());
 
         // Decrement the stream's buffered data counter
-        debug_assert!(self.buffered_send_data >= len as usize);
+        debug_assert!(self.buffered_send_data >= (len as usize));
         self.buffered_send_data -= len as usize;
         self.requested_send_capacity -= len;
 
@@ -318,7 +329,7 @@ impl Stream {
             self.buffered_send_data,
             self.id,
             max_buffer_size,
-            prev_capacity,
+            prev_capacity
         );
 
         if prev_capacity < self.capacity(max_buffer_size) {
@@ -337,10 +348,15 @@ impl Stream {
     /// Returns `Err` when the decrement cannot be completed due to overflow.
     pub fn dec_content_length(&mut self, len: usize) -> Result<(), ()> {
         match self.content_length {
-            ContentLength::Remaining(ref mut rem) => match rem.checked_sub(len as u64) {
-                Some(val) => *rem = val,
-                None => return Err(()),
-            },
+            ContentLength::Remaining(ref mut rem) =>
+                match rem.checked_sub(len as u64) {
+                    Some(val) => {
+                        *rem = val;
+                    }
+                    None => {
+                        return Err(());
+                    }
+                }
             ContentLength::Head => {
                 if len != 0 {
                     return Err(());
@@ -404,15 +420,8 @@ impl fmt::Debug for Stream {
             .field("requested_send_capacity", &self.requested_send_capacity)
             .field("buffered_send_data", &self.buffered_send_data)
             .h2_field_some("send_task", &self.send_task.as_ref().map(|_| ()))
-            .h2_field_if_then(
-                "pending_send",
-                !self.pending_send.is_empty(),
-                &self.pending_send,
-            )
-            .h2_field_some(
-                "next_pending_send_capacity",
-                &self.next_pending_send_capacity,
-            )
+            .h2_field_if_then("pending_send", !self.pending_send.is_empty(), &self.pending_send)
+            .h2_field_some("next_pending_send_capacity", &self.next_pending_send_capacity)
             .h2_field_if("is_pending_send_capacity", &self.is_pending_send_capacity)
             .h2_field_if("send_capacity_inc", &self.send_capacity_inc)
             .h2_field_some("next_open", &self.next_open)
@@ -426,18 +435,14 @@ impl fmt::Debug for Stream {
             .h2_field_if("is_pending_window_update", &self.is_pending_window_update)
             .h2_field_some("reset_at", &self.reset_at)
             .h2_field_some("next_reset_expire", &self.next_reset_expire)
-            .h2_field_if_then(
-                "pending_recv",
-                !self.pending_recv.is_empty(),
-                &self.pending_recv,
-            )
+            .h2_field_if_then("pending_recv", !self.pending_recv.is_empty(), &self.pending_recv)
             .h2_field_if("is_recv", &self.is_recv)
             .h2_field_some("recv_task", &self.recv_task.as_ref().map(|_| ()))
             .h2_field_some("push_task", &self.push_task.as_ref().map(|_| ()))
             .h2_field_if_then(
                 "pending_push_promises",
                 !self.pending_push_promises.is_empty(),
-                &self.pending_push_promises,
+                &self.pending_push_promises
             )
             .field("content_length", &self.content_length)
             .finish()
