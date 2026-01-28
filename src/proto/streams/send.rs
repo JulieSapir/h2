@@ -141,11 +141,6 @@ impl Send {
         counts: &mut Counts,
         task: &mut Option<Waker>
     ) -> Result<(), UserError> {
-        if stream.pretend_dead {
-            tracing::info!("stream {:?} pretend-dead: swallow send", stream.id);
-            return Ok(()); // 吞掉，不入 SendBuffer，不改状态
-        }
-
         tracing::trace!("send_headers; frame={:?}; init_window={:?}", frame, self.init_window_sz);
 
         Self::check_headers(frame.fields())?;
@@ -154,6 +149,11 @@ impl Send {
 
         // Update the state
         stream.state.send_open(end_stream)?;
+
+        if stream.pretend_dead {
+            tracing::info!("stream {:?} pretend-dead: swallow send", stream.id);
+            return Ok(()); // 吞掉，不入 SendBuffer，但状态已更新
+        }
 
         let mut pending_open = false;
         if counts.peer().is_local_init(frame.stream_id()) && !stream.is_pending_push {
@@ -304,8 +304,14 @@ impl Send {
         where B: Buf
     {
         if stream.pretend_dead {
+            // Even for pretend_dead streams, we need to update state
+            // to allow proper stream cleanup and memory release
+            if frame.is_end_stream() {
+                stream.state.send_close();
+                self.prioritize.reserve_capacity(0, stream, counts);
+            }
             tracing::info!("stream {:?} pretend-dead: swallow send", stream.id);
-            return Ok(()); // 吞掉，不入 SendBuffer，不改状态
+            return Ok(()); // 吞掉，不入 SendBuffer，但状态已更新
         }
 
         self.prioritize.send_data(frame, buffer, stream, counts, task)
@@ -326,11 +332,16 @@ impl Send {
 
         stream.state.send_close();
 
-        tracing::trace!("send_trailers -- queuing; frame={:?}", frame);
-        self.prioritize.queue_frame(frame.into(), buffer, stream, task);
-
         // Release any excess capacity
         self.prioritize.reserve_capacity(0, stream, counts);
+
+        if stream.pretend_dead {
+            tracing::info!("stream {:?} pretend-dead: swallow send", stream.id);
+            return Ok(()); // 吞掉，不入 SendBuffer，但状态已更新
+        }
+
+        tracing::trace!("send_trailers -- queuing; frame={:?}", frame);
+        self.prioritize.queue_frame(frame.into(), buffer, stream, task);
 
         Ok(())
     }
