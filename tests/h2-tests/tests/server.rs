@@ -1592,3 +1592,87 @@ async fn init_window_size_smaller_than_default_should_use_default_before_ack() {
 
     join(client, h2).await;
 }
+
+#[tokio::test]
+async fn pretend_dead_swallows_response() {
+    h2_support::trace_init!();
+    let (io, mut client) = mock::new();
+
+    let client = async move {
+        let recv_settings = client.assert_server_handshake().await;
+        assert_default_settings!(recv_settings);
+        client
+            .send_frame(frames::headers(1).request("GET", "https://example.com/").eos())
+            .await;
+        
+        // Wait a bit to ensure no response arrives since it's swallowed
+        idle_ms(50).await;
+        
+        // Close the connection
+        client.send_frame(frames::go_away(0)).await;
+    };
+
+    let h2 = async move {
+        let mut srv = server::handshake(io).await.expect("handshake");
+        let (req, mut stream) = srv.next().await.unwrap().unwrap();
+
+        assert_eq!(req.method(), &http::Method::GET);
+
+        // Mark stream as pretend dead BEFORE sending response
+        stream.pretend_dead();
+
+        // This response should be swallowed (not sent to client)
+        let rsp = http::Response::builder().status(200).body(()).unwrap();
+        stream.send_response(rsp, true).unwrap();
+
+        // The send should succeed but the data is swallowed
+        assert!(srv.next().await.is_none());
+    };
+
+    join(client, h2).await;
+}
+
+#[tokio::test]
+async fn pretend_dead_swallows_data() {
+    h2_support::trace_init!();
+    let (io, mut client) = mock::new();
+
+    let client = async move {
+        let recv_settings = client.assert_server_handshake().await;
+        assert_default_settings!(recv_settings);
+        client
+            .send_frame(frames::headers(1).request("GET", "https://example.com/").eos())
+            .await;
+        
+        // We should receive the response headers but not the data
+        client.recv_frame(frames::headers(1).response(200)).await;
+        
+        // Wait a bit to ensure no data frame arrives
+        idle_ms(50).await;
+        
+        // Close the connection
+        client.send_frame(frames::go_away(1)).await;
+    };
+
+    let h2 = async move {
+        let mut srv = server::handshake(io).await.expect("handshake");
+        let (req, mut stream) = srv.next().await.unwrap().unwrap();
+
+        assert_eq!(req.method(), &http::Method::GET);
+
+        // Send response first
+        let rsp = http::Response::builder().status(200).body(()).unwrap();
+        let mut send = stream.send_response(rsp, false).unwrap();
+
+        // Mark stream as pretend dead AFTER sending response
+        stream.pretend_dead();
+
+        // This data should be swallowed (not sent to client)
+        send.send_data("world".into(), true).unwrap();
+
+        // The send should succeed but the data is swallowed
+        assert!(srv.next().await.is_none());
+    };
+
+    join(client, h2).await;
+}
