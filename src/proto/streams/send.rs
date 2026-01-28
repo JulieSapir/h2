@@ -307,8 +307,11 @@ impl Send {
             // Even for pretend_dead streams, we need to update state
             // to allow proper stream cleanup and memory release
             if frame.is_end_stream() {
-                stream.state.send_close();
-                self.prioritize.reserve_capacity(0, stream, counts);
+                // Only close if the stream is in a valid state for closing
+                if stream.state.is_send_streaming() {
+                    stream.state.send_close();
+                    self.prioritize.reserve_capacity(0, stream, counts);
+                }
             }
             tracing::info!("stream {:?} pretend-dead: swallow send", stream.id);
             return Ok(()); // 吞掉，不入 SendBuffer，但状态已更新
