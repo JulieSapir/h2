@@ -1313,8 +1313,9 @@ impl<B: Buf> SendResponse<B> {
     /// ```no_run
     /// use h2::server;
     /// use http::Response;
+    /// use bytes::Bytes;
     ///
-    /// # async fn example(mut send_response: h2::server::SendResponse<bytes::Bytes>) {
+    /// # async fn example(mut send_response: h2::server::SendResponse<Bytes>) {
     /// // Mark as pretend dead before sending response
     /// send_response.pretend_dead();
     ///
@@ -1325,7 +1326,8 @@ impl<B: Buf> SendResponse<B> {
     ///     .unwrap();
     /// let mut stream = send_response.send_response(response, false).unwrap();
     ///
-    /// // Any data sent on stream will also be swallowed
+    /// // This data will also be swallowed
+    /// stream.send_data(Bytes::from("hello"), true).unwrap();
     /// # }
     /// ```
     pub fn pretend_dead(&mut self) {

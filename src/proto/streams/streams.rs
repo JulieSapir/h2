@@ -1357,16 +1357,17 @@ impl<B> StreamRef<B> {
     /// ```no_run
     /// # use h2::server;
     /// # use http::Response;
-    /// # async fn example(mut send_response: h2::server::SendResponse<bytes::Bytes>) {
-    /// // Send initial response
+    /// # use bytes::Bytes;
+    /// # async fn example(mut send_response: h2::server::SendResponse<Bytes>) {
+    /// // Mark as pretend dead before sending response
+    /// send_response.pretend_dead();
+    /// 
+    /// // This response will be swallowed (not sent to peer)
     /// let response = Response::builder()
     ///     .status(200)
     ///     .body(())
     ///     .unwrap();
-    /// let mut stream = send_response.send_response(response, false).unwrap();
-    ///
-    /// // Mark as pretend dead - further sends will be swallowed
-    /// send_response.pretend_dead();
+    /// let _stream = send_response.send_response(response, true).unwrap();
     /// # }
     /// ```
     pub fn pretend_dead(&mut self) {

@@ -1625,7 +1625,7 @@ async fn pretend_dead_swallows_response() {
         let rsp = http::Response::builder().status(200).body(()).unwrap();
         stream.send_response(rsp, true).unwrap();
 
-        // The send should succeed but the data is swallowed
+        // Connection processing completes
         assert!(srv.next().await.is_none());
     };
 
@@ -1670,7 +1670,7 @@ async fn pretend_dead_swallows_data() {
         // This data should be swallowed (not sent to client)
         send.send_data("world".into(), true).unwrap();
 
-        // The send should succeed but the data is swallowed
+        // Connection processing completes
         assert!(srv.next().await.is_none());
     };
 
