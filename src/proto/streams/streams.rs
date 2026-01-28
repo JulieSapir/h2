@@ -1341,6 +1341,44 @@ impl<B> StreamRef<B> {
     pub fn stream_id(&self) -> StreamId {
         self.opaque.stream_id()
     }
+
+    /// Mark this stream as "pretend dead".
+    ///
+    /// When a stream is marked as pretend dead, it will swallow all outgoing frames
+    /// (data, trailers, etc.) without actually sending them to the peer. The stream
+    /// state is still updated internally to allow proper cleanup and memory release.
+    ///
+    /// This is useful for scenarios where you want to stop sending data to a client
+    /// (e.g., they've closed the connection or you want to simulate a connection drop)
+    /// but still maintain proper internal state management.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use h2::server;
+    /// # use http::Response;
+    /// # use bytes::Bytes;
+    /// # async fn example(mut send_response: h2::server::SendResponse<Bytes>) {
+    /// // Mark as pretend dead before sending response
+    /// send_response.pretend_dead();
+    /// 
+    /// // This response will be swallowed (not sent to peer)
+    /// let response = Response::builder()
+    ///     .status(200)
+    ///     .body(())
+    ///     .unwrap();
+    /// let _stream = send_response.send_response(response, true).unwrap();
+    /// # }
+    /// ```
+    pub fn pretend_dead(&mut self) {
+        let mut me = self.opaque.inner.lock().unwrap();
+        let me = &mut *me;
+
+        let mut stream = me.store.resolve(self.opaque.key);
+        stream.pretend_dead = true;
+        
+        tracing::info!("stream {:?} marked as pretend-dead", stream.id);
+    }
 }
 
 impl<B> Clone for StreamRef<B> {
