@@ -150,22 +150,15 @@ impl Send {
         // Update the state
         stream.state.send_open(end_stream)?;
 
+        if stream.pretend_dead {
+            tracing::info!("stream {:?} pretend-dead: swallow send", stream.id);
+            return Ok(()); // 吞掉，不入 SendBuffer，但状态已更新
+        }
+
         let mut pending_open = false;
         if counts.peer().is_local_init(frame.stream_id()) && !stream.is_pending_push {
             self.prioritize.queue_open(stream);
             pending_open = true;
-        }
-
-        if stream.pretend_dead {
-            tracing::info!("stream {:?} pretend-dead: swallow send", stream.id);
-            // Need to notify the connection when pushing onto pending_open since
-            // we're not queuing the frame.
-            if pending_open {
-                if let Some(task) = task.take() {
-                    task.wake();
-                }
-            }
-            return Ok(()); // 吞掉，不入 SendBuffer，但状态已更新
         }
 
         // Queue the frame for sending
